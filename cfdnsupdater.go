@@ -1,0 +1,229 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"flag"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/cloudflare/cloudflare-go"
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promauto"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+	"github.com/sirupsen/logrus"
+)
+
+var (
+	log         *logrus.Entry
+	updateCount = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "cfdnsupdater_update_count",
+		Help: "The number of DNS updates completed",
+	})
+)
+
+type CFUpdateConfig struct {
+	Zone      string
+	Host      string
+	Email     string
+	ApiKey    string
+	IPService string
+}
+
+func getenvDefault(key string, def string) string {
+	value := os.Getenv(key)
+	if value == "" {
+		return def
+	}
+	return value
+}
+
+func isAlive(w http.ResponseWriter, r *http.Request) {
+	_, err := fmt.Fprint(w, "Alive.")
+	if err != nil {
+		log.Error("error when responding with alive", err)
+	}
+}
+
+func isReady(w http.ResponseWriter, r *http.Request) {
+	_, err := fmt.Fprint(w, "Ready.")
+	if err != nil {
+		log.Error("error when responding with ready", err)
+	}
+}
+
+func setupLogger(debug, nojson bool) *logrus.Entry {
+	log := logrus.New()
+	if debug {
+		log.SetLevel(logrus.DebugLevel)
+	}
+	var logger *logrus.Entry
+	if nojson {
+		logger = log.WithFields(logrus.Fields{})
+	} else {
+		log.SetFormatter(&logrus.JSONFormatter{
+			TimestampFormat: time.RFC3339Nano,
+			FieldMap: logrus.FieldMap{
+				logrus.FieldKeyTime:  "@timestamp",
+				logrus.FieldKeyLevel: "level",
+				logrus.FieldKeyMsg:   "message",
+				logrus.FieldKeyFunc:  "caller",
+			},
+		})
+		log.SetOutput(os.Stdout)
+		log.SetReportCaller(true)
+		logger = log.WithFields(logrus.Fields{})
+	}
+
+	return logger
+}
+
+func getIP(ip_service string) (string, error) {
+	res, err := http.Get(ip_service)
+	if err != nil {
+		return "", err
+	}
+
+	if res.StatusCode != http.StatusOK {
+		return "", errors.New(fmt.Sprintf("Unexpected HTTP status %s", res.Status))
+	}
+
+	defer res.Body.Close()
+	b, err := io.ReadAll(res.Body)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(string(b)), nil
+}
+
+func updateHost(config CFUpdateConfig, ip string) error {
+	api, err := cloudflare.New(config.ApiKey, config.Email)
+	if err != nil {
+		return err
+	}
+
+	ctx := context.Background()
+
+	zoneID, err := api.ZoneIDByName(config.Zone)
+	if err != nil {
+		return err
+	}
+
+	hostrec := cloudflare.DNSRecord{Name: config.Host, Type: "A"}
+
+	records, err := api.DNSRecords(ctx, zoneID, hostrec)
+	if err != nil {
+		return err
+	}
+	if len(records) != 1 {
+		log.Fatalf("Name %s has %d DNS records - only a single record is supported", config.Host, len(records))
+	}
+
+	if records[0].Content == ip {
+		log.Debugf("Host %s already has IP %s, not updating", config.Host, ip)
+		return nil
+	}
+
+	oldip := records[0].Content
+	records[0].Content = ip
+	err = api.UpdateDNSRecord(ctx, zoneID, records[0].ID, records[0])
+	if err != nil {
+		return err
+	}
+	log.Infof("Host %s IP successfully changed from %s to %s", config.Host, oldip, ip)
+	updateCount.Inc()
+	return nil
+}
+
+func updateHostLoop(config CFUpdateConfig, sleep time.Duration) {
+	go func() {
+		for {
+			log.Debugf("Starting update of host %s", config.Host)
+			ip, err := getIP(config.IPService)
+			if err != nil {
+				log.Errorf("Failed to get IP: %s", err)
+			}
+			log.Debugf("Got IP %s", ip)
+			err = updateHost(config, ip)
+			if err != nil {
+				log.Errorf("Failed to update DNS: %s", err)
+			}
+			log.Debugf("Finished update of host %s, sleeping %s", config.Host, sleep)
+			time.Sleep(sleep)
+		}
+	}()
+}
+
+func main() {
+	debug := flag.Bool("debug", false, "enable debug logging")
+	noJSON := flag.Bool("no-json", false, "disable json logging")
+	zone := flag.String("zone", getenvDefault("CFDNSUPDATER_ZONE", ""), "name of the zone to update")
+	host := flag.String("host", getenvDefault("CFDNSUPDATER_HOST", ""), "FQDN of the host to update")
+	email := flag.String("email", getenvDefault("CLOUDFLARE_EMAIL", ""), "Cloudflare account email address")
+	apiKey := flag.String("api-key", getenvDefault("CLOUDFLARE_API_KEY", ""), "Cloudflare account API key")
+	ipService := flag.String("ip-service", getenvDefault("CFDNSUPDATER_IP_SERVICE", "https://www.mcrygh.com/ip"), "The URL of a service which returns our current IP")
+	listen := flag.String("listen", ":9876", "listen parameter")
+	urlprefix := flag.String("urlprefix", "", "prefix for URL paths")
+	sleepdefault := uint(300)
+	sleepwarning := ""
+	if s := os.Getenv("CFDNSUPDATER_SLEEP_INTERVAL"); s != "" {
+		si, err := strconv.ParseUint(s, 10, 0)
+		if err != nil {
+			// defer warning about incorrect setting until logger is set up
+			sleepwarning = s
+		} else {
+			sleepdefault = uint(si)
+		}
+	}
+	sleepinterval := flag.Uint("sleep-interval", sleepdefault, "period to sleep between runs (env: WALG_GCP_SLEEP_INTERVAL)")
+	flag.Parse()
+
+	logger := setupLogger(*debug, *noJSON)
+	log = logger
+
+	if sleepwarning != "" {
+		logger.Warnf("Environment setting '%s' for sleep interval is not a positive integer, using default %d", sleepwarning, sleepdefault)
+	}
+
+	if len(*urlprefix) > 0 && (*urlprefix)[0] != '/' {
+		logger.Fatalf("URL prefix must start with a / or it won't match (got %s)", *urlprefix)
+	}
+	if *zone == "" {
+		logger.Fatal("Zone name must be set, set -zone or CFDNSUPDATER_ZONE")
+	}
+	if *host == "" {
+		logger.Fatal("Host name must be set, set -host or CFDNSUPDATER_HOST")
+	}
+	if !strings.HasSuffix(*host, *zone) {
+		logger.Fatal("The host name must end with the zone name")
+	}
+	if *email == "" {
+		logger.Fatal("Cloudflare email must be set, set -email or CLOUDFLARE_EMAIL")
+	}
+	if *apiKey == "" {
+		logger.Fatal("Host name must be set, set -api-key or CLOUDFLARE_API_KEY")
+	}
+
+	updateHostLoop(CFUpdateConfig{
+		Zone:      *zone,
+		Host:      *host,
+		Email:     *email,
+		ApiKey:    *apiKey,
+		IPService: *ipService,
+	}, time.Duration(*sleepinterval)*time.Second)
+
+	murl := *urlprefix + "/metrics"
+	rurl := *urlprefix + "/ready"
+	aurl := *urlprefix + "/alive"
+
+	http.Handle(murl, promhttp.Handler())
+	http.HandleFunc(rurl, isReady)
+	http.HandleFunc(aurl, isAlive)
+	log.Infof("Listening on %s, handlers on %s, %s, %s", *listen, murl, rurl, aurl)
+	log.Fatal(http.ListenAndServe(*listen, nil))
+}
