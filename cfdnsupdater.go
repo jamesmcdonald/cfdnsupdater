@@ -180,7 +180,7 @@ func main() {
 			sleepdefault = uint(si)
 		}
 	}
-	sleepinterval := flag.Uint("sleep-interval", sleepdefault, "period to sleep between runs (env: WALG_GCP_SLEEP_INTERVAL)")
+	sleepinterval := flag.Uint("sleep-interval", sleepdefault, "period to sleep between runs (env: CFDNSUPDATER_SLEEP_INTERVAL)")
 	flag.Parse()
 
 	logger := setupLogger(*debug, *noJSON)
