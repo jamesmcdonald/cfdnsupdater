@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"strconv"
@@ -84,7 +85,15 @@ func setupLogger(debug, nojson bool) *logrus.Entry {
 }
 
 func getIP(ip_service string) (string, error) {
-	res, err := http.Get(ip_service)
+	dialer := net.Dialer{}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		return dialer.DialContext(ctx, "tcp4", addr)
+	}
+	client := http.Client{
+		Transport: transport,
+	}
+	res, err := client.Get(ip_service)
 	if err != nil {
 		return "", err
 	}
