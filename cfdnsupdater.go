@@ -175,7 +175,7 @@ func main() {
 	host := flag.String("host", getenvDefault("CFDNSUPDATER_HOST", ""), "FQDN of the host to update")
 	email := flag.String("email", getenvDefault("CLOUDFLARE_EMAIL", ""), "Cloudflare account email address")
 	apiKey := flag.String("api-key", getenvDefault("CLOUDFLARE_API_KEY", ""), "Cloudflare account API key")
-	ipService := flag.String("ip-service", getenvDefault("CFDNSUPDATER_IP_SERVICE", "https://www.mcrygh.com/ip"), "The URL of a service which returns our current IP")
+	ipService := flag.String("ip-service", getenvDefault("CFDNSUPDATER_IP_SERVICE", "https://www.xanthspod.com/ip"), "The URL of a service which returns our current IP")
 	listen := flag.String("listen", ":9876", "listen parameter")
 	urlprefix := flag.String("urlprefix", "", "prefix for URL paths")
 	sleepdefault := uint(300)
