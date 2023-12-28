@@ -122,31 +122,50 @@ func updateHost(config CFUpdateConfig, ip string) error {
 	if err != nil {
 		return err
 	}
+	zone := cloudflare.ZoneIdentifier(zoneID)
 
-	hostrec := cloudflare.DNSRecord{Name: config.Host, Type: "A"}
+	hostrec := cloudflare.ListDNSRecordsParams{Name: config.Host, Type: "A"}
 
-	records, err := api.DNSRecords(ctx, zoneID, hostrec)
+	records, _, err := api.ListDNSRecords(ctx, zone, hostrec)
 	if err != nil {
 		return err
 	}
-	if len(records) != 1 {
-		log.Fatalf("Name %s has %d DNS records - only a single record is supported", config.Host, len(records))
-	}
 
-	if records[0].Content == ip {
-		log.Debugf("Host %s already has IP %s, not updating", config.Host, ip)
+	switch len(records) {
+	case 0:
+		_, err := api.CreateDNSRecord(ctx, zone, cloudflare.CreateDNSRecordParams{
+			Name:    config.Host,
+			Type:    "A",
+			Content: ip,
+		})
+		if err != nil {
+			log.Errorf("Failed to create DNS record: %s", err)
+			return err
+		}
+		log.Infof("Created a new A record %s with IP %s", config.Host, ip)
+		updateCount.Inc()
 		return nil
-	}
+	case 1:
+		if records[0].Content == ip {
+			log.Debugf("Host %s already has IP %s, not updating", config.Host, ip)
+			return nil
+		}
 
-	oldip := records[0].Content
-	records[0].Content = ip
-	err = api.UpdateDNSRecord(ctx, zoneID, records[0].ID, records[0])
-	if err != nil {
+		oldip := records[0].Content
+		_, err = api.UpdateDNSRecord(ctx, zone, cloudflare.UpdateDNSRecordParams{
+			ID:      records[0].ID,
+			Content: ip,
+		})
+		if err != nil {
+			return err
+		}
+		log.Infof("Host %s IP successfully changed from %s to %s", config.Host, oldip, ip)
+		updateCount.Inc()
+		return nil
+	default:
+		log.Errorf("Name %s has %d DNS records - only a single record is supported", config.Host, len(records))
 		return err
 	}
-	log.Infof("Host %s IP successfully changed from %s to %s", config.Host, oldip, ip)
-	updateCount.Inc()
-	return nil
 }
 
 func updateHostLoop(config CFUpdateConfig, sleep time.Duration) {
