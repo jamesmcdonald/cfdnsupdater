@@ -93,7 +93,12 @@ func getIP(ip_service string) (string, error) {
 	client := http.Client{
 		Transport: transport,
 	}
-	res, err := client.Get(ip_service)
+	req, err := http.NewRequest("GET", ip_service, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("User-Agent", "cfdnsupdater/0.1")
+	res, err := client.Do(req)
 	if err != nil {
 		return "", err
 	}
