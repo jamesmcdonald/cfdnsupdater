@@ -1,5 +1,7 @@
 package main
 
+//go:generate go run genversion.go
+
 import (
 	"context"
 	"errors"
@@ -97,7 +99,7 @@ func getIP(ip_service string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	req.Header.Set("User-Agent", "cfdnsupdater/0.1")
+	req.Header.Set("User-Agent", fmt.Sprintf("cfdnsupdater/%s", Version))
 	res, err := client.Do(req)
 	if err != nil {
 		return "", err
@@ -257,6 +259,6 @@ func main() {
 	http.Handle(murl, promhttp.Handler())
 	http.HandleFunc(rurl, isReady)
 	http.HandleFunc(aurl, isAlive)
-	log.Infof("Listening on %s, handlers on %s, %s, %s", *listen, murl, rurl, aurl)
+	log.Infof("cfdnsupdater %s [%s] listening on %s", Version, Commit, *listen)
 	log.Fatal(http.ListenAndServe(*listen, nil))
 }
