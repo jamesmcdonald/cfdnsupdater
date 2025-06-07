@@ -1,0 +1,12 @@
+version: 2
+
+builds:
+  - goos:
+    - linux
+    goarch:
+    - amd64
+
+dockers:
+  - image_templates:
+    - ghcr.io/jamesmcdonald/cfdnsupdater:{{ .Tag }}
+    - ghcr.io/jamesmcdonald/cfdnsupdater:latest
