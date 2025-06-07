@@ -3,6 +3,7 @@ package main
 //go:generate go run genversion.go
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"flag"
@@ -22,6 +23,8 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+const defaultIPService = "https://ip.shee.sh/"
+
 var (
 	log         *logrus.Entry
 	updateCount = promauto.NewCounter(prometheus.CounterOpts{
@@ -36,14 +39,6 @@ type CFUpdateConfig struct {
 	Email     string
 	ApiKey    string
 	IPService string
-}
-
-func getenvDefault(key string, def string) string {
-	value := os.Getenv(key)
-	if value == "" {
-		return def
-	}
-	return value
 }
 
 func isAlive(w http.ResponseWriter, r *http.Request) {
@@ -197,11 +192,11 @@ func updateHostLoop(config CFUpdateConfig, sleep time.Duration) {
 func main() {
 	debug := flag.Bool("debug", false, "enable debug logging")
 	noJSON := flag.Bool("no-json", false, "disable json logging")
-	zone := flag.String("zone", getenvDefault("CFDNSUPDATER_ZONE", ""), "name of the zone to update")
-	host := flag.String("host", getenvDefault("CFDNSUPDATER_HOST", ""), "FQDN of the host to update")
-	email := flag.String("email", getenvDefault("CLOUDFLARE_EMAIL", ""), "Cloudflare account email address")
-	apiKey := flag.String("api-key", getenvDefault("CLOUDFLARE_API_KEY", ""), "Cloudflare account API key")
-	ipService := flag.String("ip-service", getenvDefault("CFDNSUPDATER_IP_SERVICE", "https://ip.shee.sh/"), "The URL of a service which returns our current IP")
+	zone := flag.String("zone", os.Getenv("CFDNSUPDATER_ZONE"), "name of the zone to update")
+	host := flag.String("host", os.Getenv("CFDNSUPDATER_HOST"), "FQDN of the host to update")
+	email := flag.String("email", os.Getenv("CLOUDFLARE_EMAIL"), "Cloudflare account email address")
+	apiKey := flag.String("api-key", os.Getenv("CLOUDFLARE_API_KEY"), "Cloudflare account API key")
+	ipService := flag.String("ip-service", cmp.Or(os.Getenv("CFDNSUPDATER_IP_SERVICE"), defaultIPService), "The URL of a service which returns our current IP")
 	listen := flag.String("listen", ":9876", "listen parameter")
 	urlprefix := flag.String("urlprefix", "", "prefix for URL paths")
 	showVersion := flag.Bool("version", false, "show version and exit")
