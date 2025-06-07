@@ -204,6 +204,7 @@ func main() {
 	ipService := flag.String("ip-service", getenvDefault("CFDNSUPDATER_IP_SERVICE", "https://ip.shee.sh/"), "The URL of a service which returns our current IP")
 	listen := flag.String("listen", ":9876", "listen parameter")
 	urlprefix := flag.String("urlprefix", "", "prefix for URL paths")
+	showVersion := flag.Bool("version", false, "show version and exit")
 	sleepdefault := uint(300)
 	sleepwarning := ""
 	if s := os.Getenv("CFDNSUPDATER_SLEEP_INTERVAL"); s != "" {
@@ -217,6 +218,11 @@ func main() {
 	}
 	sleepinterval := flag.Uint("sleep-interval", sleepdefault, "period to sleep between runs (env: CFDNSUPDATER_SLEEP_INTERVAL)")
 	flag.Parse()
+
+	if *showVersion {
+		fmt.Printf("cfdnsupdater %s [%s]\n", Version, Commit)
+		os.Exit(0)
+	}
 
 	logger := setupLogger(*debug, *noJSON)
 	log = logger
