@@ -41,8 +41,13 @@ jobs:
       #       ghcr.io/${{ github.repository }}:${{ github.sha }}
       #       ghcr.io/${{ github.repository }}:latest
 
+      - name: Set up Go
+        uses: actions/setup-go@v5
+
       - name: Run goreleaser
-        uses: goreleaser/goreleaser-action@v5
+        uses: goreleaser/goreleaser-action@v6
         with:
-          version: latest
+          version: '~> v2'
           args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
