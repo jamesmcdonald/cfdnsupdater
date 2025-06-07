@@ -9,6 +9,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -20,13 +21,11 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promauto"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
-	"github.com/sirupsen/logrus"
 )
 
 const defaultIPService = "https://ip.shee.sh/"
 
 var (
-	log         *logrus.Entry
 	updateCount = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "cfdnsupdater_update_count",
 		Help: "The number of DNS updates completed",
@@ -44,41 +43,47 @@ type CFUpdateConfig struct {
 func isAlive(w http.ResponseWriter, r *http.Request) {
 	_, err := fmt.Fprint(w, "Alive.")
 	if err != nil {
-		log.Error("error when responding with alive", err)
+		slog.Error("error when responding with alive", "error", err)
 	}
 }
 
 func isReady(w http.ResponseWriter, r *http.Request) {
 	_, err := fmt.Fprint(w, "Ready.")
 	if err != nil {
-		log.Error("error when responding with ready", err)
+		slog.Error("error when responding with ready", "error", err)
 	}
 }
 
-func setupLogger(debug, nojson bool) *logrus.Entry {
-	log := logrus.New()
-	if debug {
-		log.SetLevel(logrus.DebugLevel)
+func setupLogger(debug, nojson bool) {
+	opts := &slog.HandlerOptions{
+		Level: slog.LevelInfo,
+		ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
+			if a.Key == slog.TimeKey {
+				a.Key = "@timestamp"
+			}
+			return a
+		},
 	}
-	var logger *logrus.Entry
-	if nojson {
-		logger = log.WithFields(logrus.Fields{})
-	} else {
-		log.SetFormatter(&logrus.JSONFormatter{
-			TimestampFormat: time.RFC3339Nano,
-			FieldMap: logrus.FieldMap{
-				logrus.FieldKeyTime:  "@timestamp",
-				logrus.FieldKeyLevel: "level",
-				logrus.FieldKeyMsg:   "message",
-				logrus.FieldKeyFunc:  "caller",
-			},
-		})
-		log.SetOutput(os.Stdout)
-		log.SetReportCaller(true)
-		logger = log.WithFields(logrus.Fields{})
+	if debug {
+		opts.Level = slog.LevelDebug
 	}
 
-	return logger
+	var handler slog.Handler
+	if nojson {
+		handler = slog.NewTextHandler(os.Stdout, opts)
+	} else {
+		handler = slog.NewJSONHandler(os.Stdout, opts)
+	}
+	slog.SetDefault(slog.New(handler).With(
+		"service.name", "cfdnsupdater",
+		"service.version", Version,
+		"event.module", "cloudflare",
+	))
+
+	// logrus.FieldKeyTime:  "@timestamp",
+	// logrus.FieldKeyLevel: "level",
+	// logrus.FieldKeyMsg:   "message",
+	// logrus.FieldKeyFunc:  "caller",
 }
 
 func getIP(ip_service string) (string, error) {
@@ -141,15 +146,15 @@ func updateHost(config CFUpdateConfig, ip string) error {
 			Content: ip,
 		})
 		if err != nil {
-			log.Errorf("Failed to create DNS record: %s", err)
+			slog.Error("Failed to create DNS record", "error", err)
 			return err
 		}
-		log.Infof("Created a new A record %s with IP %s", config.Host, ip)
+		slog.Info("Created a new A record", "fqdn", config.Host, "ip", ip)
 		updateCount.Inc()
 		return nil
 	case 1:
 		if records[0].Content == ip {
-			log.Debugf("Host %s already has IP %s, not updating", config.Host, ip)
+			slog.Debug("IP is already correct", "fqdn", config.Host, "ip", ip)
 			return nil
 		}
 
@@ -161,11 +166,17 @@ func updateHost(config CFUpdateConfig, ip string) error {
 		if err != nil {
 			return err
 		}
-		log.Infof("Host %s IP successfully changed from %s to %s", config.Host, oldip, ip)
+		slog.Info("IP successfully changed",
+			"dns.question.name", config.Host,
+			"source.address", oldip,
+			"destination.address", ip,
+			"event.action", "ip_update",
+			"event.dataset", "dns",
+		)
 		updateCount.Inc()
 		return nil
 	default:
-		log.Errorf("Name %s has %d DNS records - only a single record is supported", config.Host, len(records))
+		slog.Error(fmt.Sprintf("Name %s has %d DNS records - only a single record is supported", config.Host, len(records)))
 		return err
 	}
 }
@@ -173,17 +184,17 @@ func updateHost(config CFUpdateConfig, ip string) error {
 func updateHostLoop(config CFUpdateConfig, sleep time.Duration) {
 	go func() {
 		for {
-			log.Debugf("Starting update of host %s", config.Host)
+			slog.Debug("Starting update of host", "fqdn", config.Host)
 			ip, err := getIP(config.IPService)
 			if err != nil {
-				log.Errorf("Failed to get IP: %s", err)
+				slog.Error("Failed to get IP", "error", err)
 			}
-			log.Debugf("Got IP %s", ip)
+			slog.Debug("Got IP", "ip", ip)
 			err = updateHost(config, ip)
 			if err != nil {
-				log.Errorf("Failed to update DNS: %s", err)
+				slog.Error("Failed to update DNS", "error", err)
 			}
-			log.Debugf("Finished update of host %s, sleeping %s", config.Host, sleep)
+			slog.Debug("Finished update, sleeping", "interval", sleep)
 			time.Sleep(sleep)
 		}
 	}()
@@ -219,30 +230,35 @@ func main() {
 		os.Exit(0)
 	}
 
-	logger := setupLogger(*debug, *noJSON)
-	log = logger
+	setupLogger(*debug, *noJSON)
 
 	if sleepwarning != "" {
-		logger.Warnf("Environment setting '%s' for sleep interval is not a positive integer, using default %d", sleepwarning, sleepdefault)
+		slog.Warn("Environment setting '%s' for sleep interval is not a positive integer, using default %d", sleepwarning, sleepdefault)
 	}
 
 	if len(*urlprefix) > 0 && (*urlprefix)[0] != '/' {
-		logger.Fatalf("URL prefix must start with a / or it won't match (got %s)", *urlprefix)
+		slog.Error(fmt.Sprintf("URL prefix must start with a / or it won't match (got %s)", *urlprefix))
+		os.Exit(1)
 	}
 	if *zone == "" {
-		logger.Fatal("Zone name must be set, set -zone or CFDNSUPDATER_ZONE")
+		slog.Error("Zone name must be set, set -zone or CFDNSUPDATER_ZONE")
+		os.Exit(1)
 	}
 	if *host == "" {
-		logger.Fatal("Host name must be set, set -host or CFDNSUPDATER_HOST")
+		slog.Error("Host name must be set, set -host or CFDNSUPDATER_HOST")
+		os.Exit(1)
 	}
 	if !strings.HasSuffix(*host, *zone) {
-		logger.Fatal("The host name must end with the zone name")
+		slog.Error("The host name must end with the zone name")
+		os.Exit(1)
 	}
 	if *email == "" {
-		logger.Fatal("Cloudflare email must be set, set -email or CLOUDFLARE_EMAIL")
+		slog.Error("Cloudflare email must be set, set -email or CLOUDFLARE_EMAIL")
+		os.Exit(1)
 	}
 	if *apiKey == "" {
-		logger.Fatal("Host name must be set, set -api-key or CLOUDFLARE_API_KEY")
+		slog.Error("Host name must be set, set -api-key or CLOUDFLARE_API_KEY")
+		os.Exit(1)
 	}
 
 	updateHostLoop(CFUpdateConfig{
@@ -260,6 +276,8 @@ func main() {
 	http.Handle(murl, promhttp.Handler())
 	http.HandleFunc(rurl, isReady)
 	http.HandleFunc(aurl, isAlive)
-	log.Infof("cfdnsupdater %s [%s] listening on %s", Version, Commit, *listen)
-	log.Fatal(http.ListenAndServe(*listen, nil))
+	slog.Info(fmt.Sprintf("cfdnsupdater %s [%s] listening on %s", Version, Commit, *listen))
+	if err := http.ListenAndServe(*listen, nil); err != nil {
+		slog.Error("Failed to start HTTP server", "error", err)
+	}
 }
