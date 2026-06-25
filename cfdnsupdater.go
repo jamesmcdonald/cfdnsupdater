@@ -188,6 +188,7 @@ func updateHostLoop(config CFUpdateConfig, sleep time.Duration) {
 			ip, err := getIP(config.IPService)
 			if err != nil {
 				slog.Error("Failed to get IP", "error", err)
+				goto next
 			}
 			slog.Debug("Got IP", "ip", ip)
 			err = updateHost(config, ip)
@@ -195,6 +196,7 @@ func updateHostLoop(config CFUpdateConfig, sleep time.Duration) {
 				slog.Error("Failed to update DNS", "error", err)
 			}
 			slog.Debug("Finished update, sleeping", "interval", sleep)
+		next:
 			time.Sleep(sleep)
 		}
 	}()
