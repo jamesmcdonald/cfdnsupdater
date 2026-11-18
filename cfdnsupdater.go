@@ -79,11 +79,6 @@ func setupLogger(debug, nojson bool) {
 		"service.version", Version,
 		"event.module", "cloudflare",
 	))
-
-	// logrus.FieldKeyTime:  "@timestamp",
-	// logrus.FieldKeyLevel: "level",
-	// logrus.FieldKeyMsg:   "message",
-	// logrus.FieldKeyFunc:  "caller",
 }
 
 func getIP(ip_service string) (string, error) {
